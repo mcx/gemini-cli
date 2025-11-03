@@ -94,6 +94,36 @@ export interface RipGrepToolParams {
    * File pattern to include in the search (e.g. "*.js", "*.{ts,tsx}")
    */
   include?: string;
+
+  /**
+   * If true, searches case-sensitively. Defaults to false.
+   */
+  case_sensitive?: boolean;
+
+  /**
+   * If true, treats pattern as a literal string. Defaults to false.
+   */
+  fixed_strings?: boolean;
+
+  /**
+   * Show num lines of context around each match.
+   */
+  context?: number;
+
+  /**
+   * Show num lines after each match.
+   */
+  after?: number;
+
+  /**
+   * Show num lines before each match.
+   */
+  before?: number;
+
+  /**
+   * If true, does not respect .gitignore or default ignores (like build/dist).
+   */
+  no_ignore?: boolean;
 }
 
 /**
@@ -145,8 +175,8 @@ class GrepToolInvocation extends BaseToolInvocation<
     // Check existence and type after resolving
     try {
       const stats = fs.statSync(targetPath);
-      if (!stats.isDirectory()) {
-        throw new Error(`Path is not a directory: ${targetPath}`);
+      if (!stats.isDirectory() && !stats.isFile()) {
+        throw new Error(`Path is not a valid directory or file: ${targetPath}`);
       }
     } catch (error: unknown) {
       if (isNodeError(error) && error.code !== 'ENOENT') {
@@ -163,16 +193,20 @@ class GrepToolInvocation extends BaseToolInvocation<
   async execute(signal: AbortSignal): Promise<ToolResult> {
     try {
       const workspaceContext = this.config.getWorkspaceContext();
-      const searchDirAbs = this.resolveAndValidatePath(this.params.path);
-      const searchDirDisplay = this.params.path || '.';
+
+      // Default to '.' if path is explicitly undefined/null.
+      // This forces CWD search instead of 'all workspaces' search by default.
+      const pathParam = this.params.path || '.';
+
+      const searchDirAbs = this.resolveAndValidatePath(pathParam);
+      const searchDirDisplay = pathParam;
 
       // Determine which directories to search
       let searchDirectories: readonly string[];
       if (searchDirAbs === null) {
-        // No path specified - search all workspace directories
+        // Fallback only if something went wrong with '.' resolution
         searchDirectories = workspaceContext.getDirectories();
       } else {
-        // Specific path provided - search only that directory
         searchDirectories = [searchDirAbs];
       }
 
@@ -188,6 +222,12 @@ class GrepToolInvocation extends BaseToolInvocation<
           pattern: this.params.pattern,
           path: searchDir,
           include: this.params.include,
+          case_sensitive: this.params.case_sensitive,
+          fixed_strings: this.params.fixed_strings,
+          context: this.params.context,
+          after: this.params.after,
+          before: this.params.before,
+          no_ignore: this.params.no_ignore,
           signal,
         });
 
@@ -318,36 +358,70 @@ class GrepToolInvocation extends BaseToolInvocation<
     pattern: string;
     path: string;
     include?: string;
+    case_sensitive?: boolean;
+    fixed_strings?: boolean;
+    context?: number;
+    after?: number;
+    before?: number;
+    no_ignore?: boolean;
     signal: AbortSignal;
   }): Promise<GrepMatch[]> {
-    const { pattern, path: absolutePath, include } = options;
-
-    const rgArgs = [
-      '--line-number',
-      '--no-heading',
-      '--with-filename',
-      '--ignore-case',
-      '--regexp',
+    const {
       pattern,
-    ];
+      path: absolutePath,
+      include,
+      case_sensitive,
+      fixed_strings,
+      context,
+      after,
+      before,
+      no_ignore,
+    } = options;
+
+    const rgArgs = ['--line-number', '--no-heading', '--with-filename'];
+
+    if (!case_sensitive) {
+      rgArgs.push('--ignore-case');
+    }
+
+    if (fixed_strings) {
+      rgArgs.push('--fixed-strings');
+    }
+
+    if (context) {
+      rgArgs.push('--context', context.toString());
+    }
+    if (after) {
+      rgArgs.push('--after-context', after.toString());
+    }
+    if (before) {
+      rgArgs.push('--before-context', before.toString());
+    }
+    if (no_ignore) {
+      rgArgs.push('--no-ignore');
+    }
+
+    rgArgs.push('--regexp', pattern);
 
     if (include) {
       rgArgs.push('--glob', include);
     }
 
-    const excludes = [
-      '.git',
-      'node_modules',
-      'bower_components',
-      '*.log',
-      '*.tmp',
-      'build',
-      'dist',
-      'coverage',
-    ];
-    excludes.forEach((exclude) => {
-      rgArgs.push('--glob', `!${exclude}`);
-    });
+    if (!no_ignore) {
+      const excludes = [
+        '.git',
+        'node_modules',
+        'bower_components',
+        '*.log',
+        '*.tmp',
+        'build',
+        'dist',
+        'coverage',
+      ];
+      excludes.forEach((exclude) => {
+        rgArgs.push('--glob', `!${exclude}`);
+      });
+    }
 
     rgArgs.push('--threads', '4');
     rgArgs.push(absolutePath);
@@ -461,24 +535,54 @@ export class RipGrepTool extends BaseDeclarativeTool<
     super(
       RipGrepTool.Name,
       'SearchText',
-      'Searches for a regular expression pattern within the content of files in a specified directory (or current working directory). Can filter files by a glob pattern. Returns the lines containing matches, along with their file paths and line numbers. Total results limited to 20,000 matches like VSCode.',
+      'FAST, optimized search powered by `ripgrep`. PREFERRED over standard `run_shell_command("grep ...")` due to better performance and automatic output limiting (max 20k matches).',
       Kind.Search,
       {
         properties: {
           pattern: {
             description:
-              "The regular expression (regex) pattern to search for within file contents (e.g., 'function\\s+myFunction', 'import\\s+\\{.*\\}\\s+from\\s+.*').",
+              "The pattern to search for. By default, treated as a Rust-flavored regular expression. Use '\\b' for precise symbol matching (e.g., '\\bMatchMe\\b').",
             type: 'string',
           },
           path: {
             description:
-              'Optional: The absolute path to the directory to search within. If omitted, searches the current working directory.',
+              "Directory or file to search. Relative paths are resolved against the current working directory. Defaults to current working directory ('.') if omitted.",
             type: 'string',
           },
           include: {
             description:
-              "Optional: A glob pattern to filter which files are searched (e.g., '*.js', '*.{ts,tsx}', 'src/**'). If omitted, searches all files (respecting potential global ignores).",
+              "Glob pattern to filter files (e.g., '*.ts', 'src/**'). Recommended for large repositories to reduce noise. Defaults to all files if omitted.",
             type: 'string',
+          },
+          case_sensitive: {
+            description:
+              'If true, search is case-sensitive. Defaults to false (ignore case) if omitted.',
+            type: 'boolean',
+          },
+          fixed_strings: {
+            description:
+              'If true, treats the `pattern` as a literal string instead of a regular expression. Defaults to false (basic regex) if omitted.',
+            type: 'boolean',
+          },
+          context: {
+            description:
+              'Show this many lines of context around each match (equivalent to grep -C). Defaults to 0 if omitted.',
+            type: 'integer',
+          },
+          after: {
+            description:
+              'Show this many lines after each match (equivalent to grep -A). Defaults to 0 if omitted.',
+            type: 'integer',
+          },
+          before: {
+            description:
+              'Show this many lines before each match (equivalent to grep -B). Defaults to 0 if omitted.',
+            type: 'integer',
+          },
+          no_ignore: {
+            description:
+              'If true, searches all files including those usually ignored (like in .gitignore, build/, dist/, etc). Defaults to false if omitted.',
+            type: 'boolean',
           },
         },
         required: ['pattern'],
@@ -516,8 +620,8 @@ export class RipGrepTool extends BaseDeclarativeTool<
     // Check existence and type after resolving
     try {
       const stats = fs.statSync(targetPath);
-      if (!stats.isDirectory()) {
-        throw new Error(`Path is not a directory: ${targetPath}`);
+      if (!stats.isDirectory() && !stats.isFile()) {
+        throw new Error(`Path is not a valid directory or file: ${targetPath}`);
       }
     } catch (error: unknown) {
       if (isNodeError(error) && error.code !== 'ENOENT') {
