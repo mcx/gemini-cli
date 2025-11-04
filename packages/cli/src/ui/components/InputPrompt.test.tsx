@@ -235,63 +235,48 @@ describe('InputPrompt', () => {
     };
   });
 
-  it('should call shellHistory.getPreviousCommand on up arrow in shell mode', async () => {
-    props.shellModeActive = true;
-    const { stdin, unmount } = renderWithProviders(<InputPrompt {...props} />);
-
-    await act(async () => {
-      stdin.write('\u001B[A');
-    });
-    await waitFor(() =>
-      expect(mockShellHistory.getPreviousCommand).toHaveBeenCalled(),
-    );
-    unmount();
-  });
-
-  it('should call shellHistory.getNextCommand on down arrow in shell mode', async () => {
-    props.shellModeActive = true;
-    const { stdin, unmount } = renderWithProviders(<InputPrompt {...props} />);
-
-    await act(async () => {
-      stdin.write('\u001B[B');
-      await waitFor(() =>
+  it.each([
+    {
+      name: 'should call getPreviousCommand on up arrow in shell mode',
+      key: '\u001B[A',
+      expectation: () =>
+        expect(mockShellHistory.getPreviousCommand).toHaveBeenCalled(),
+    },
+    {
+      name: 'should call getNextCommand on down arrow in shell mode',
+      key: '\u001B[B',
+      expectation: () =>
         expect(mockShellHistory.getNextCommand).toHaveBeenCalled(),
-      );
-    });
-    unmount();
-  });
-
-  it('should set the buffer text when a shell history command is retrieved', async () => {
+    },
+    {
+      name: 'should set buffer text when shell history command is retrieved',
+      key: '\u001B[A',
+      setup: () =>
+        vi
+          .mocked(mockShellHistory.getPreviousCommand)
+          .mockReturnValue('previous command'),
+      expectation: () => {
+        expect(mockShellHistory.getPreviousCommand).toHaveBeenCalled();
+        expect(props.buffer.setText).toHaveBeenCalledWith('previous command');
+      },
+    },
+    {
+      name: 'should call addCommandToHistory on submit in shell mode',
+      key: '\r',
+      setup: () => props.buffer.setText('ls -l'),
+      expectation: () => {
+        expect(mockShellHistory.addCommandToHistory).toHaveBeenCalledWith(
+          'ls -l',
+        );
+        expect(props.onSubmit).toHaveBeenCalledWith('ls -l');
+      },
+    },
+  ])('$name', async ({ key, setup, expectation }) => {
     props.shellModeActive = true;
-    vi.mocked(mockShellHistory.getPreviousCommand).mockReturnValue(
-      'previous command',
-    );
+    setup?.();
     const { stdin, unmount } = renderWithProviders(<InputPrompt {...props} />);
-
-    await act(async () => {
-      stdin.write('\u001B[A');
-    });
-    await waitFor(() => {
-      expect(mockShellHistory.getPreviousCommand).toHaveBeenCalled();
-      expect(props.buffer.setText).toHaveBeenCalledWith('previous command');
-    });
-    unmount();
-  });
-
-  it('should call shellHistory.addCommandToHistory on submit in shell mode', async () => {
-    props.shellModeActive = true;
-    props.buffer.setText('ls -l');
-    const { stdin, unmount } = renderWithProviders(<InputPrompt {...props} />);
-
-    await act(async () => {
-      stdin.write('\r');
-    });
-    await waitFor(() => {
-      expect(mockShellHistory.addCommandToHistory).toHaveBeenCalledWith(
-        'ls -l',
-      );
-      expect(props.onSubmit).toHaveBeenCalledWith('ls -l');
-    });
+    await act(async () => stdin.write(key));
+    await waitFor(expectation);
     unmount();
   });
 
@@ -430,66 +415,49 @@ describe('InputPrompt', () => {
       );
     });
 
-    it('should handle Ctrl+V when clipboard has an image', async () => {
-      vi.mocked(clipboardUtils.clipboardHasImage).mockResolvedValue(true);
-      vi.mocked(clipboardUtils.saveClipboardImage).mockResolvedValue(
-        '/test/.gemini-clipboard/clipboard-123.png',
-      );
-
+    it.each([
+      {
+        name: 'should handle Ctrl+V when clipboard has an image',
+        hasImage: true,
+        savedPath: '/test/.gemini-clipboard/clipboard-123.png',
+        expectations: () => {
+          expect(clipboardUtils.clipboardHasImage).toHaveBeenCalled();
+          expect(clipboardUtils.saveClipboardImage).toHaveBeenCalledWith(
+            props.config.getTargetDir(),
+          );
+          expect(clipboardUtils.cleanupOldClipboardImages).toHaveBeenCalledWith(
+            props.config.getTargetDir(),
+          );
+          expect(mockBuffer.replaceRangeByOffset).toHaveBeenCalled();
+        },
+      },
+      {
+        name: 'should not insert anything when clipboard has no image',
+        hasImage: false,
+        savedPath: null,
+        expectations: () => {
+          expect(clipboardUtils.clipboardHasImage).toHaveBeenCalled();
+          expect(clipboardUtils.saveClipboardImage).not.toHaveBeenCalled();
+          expect(mockBuffer.setText).not.toHaveBeenCalled();
+        },
+      },
+      {
+        name: 'should handle image save failure gracefully',
+        hasImage: true,
+        savedPath: null,
+        expectations: () => {
+          expect(clipboardUtils.saveClipboardImage).toHaveBeenCalled();
+          expect(mockBuffer.setText).not.toHaveBeenCalled();
+        },
+      },
+    ])('$name', async ({ hasImage, savedPath, expectations }) => {
+      vi.mocked(clipboardUtils.clipboardHasImage).mockResolvedValue(hasImage);
+      vi.mocked(clipboardUtils.saveClipboardImage).mockResolvedValue(savedPath);
       const { stdin, unmount } = renderWithProviders(
         <InputPrompt {...props} />,
       );
-
-      // Send Ctrl+V
-      await act(async () => {
-        stdin.write('\x16'); // Ctrl+V
-      });
-      await waitFor(() => {
-        expect(clipboardUtils.clipboardHasImage).toHaveBeenCalled();
-        expect(clipboardUtils.saveClipboardImage).toHaveBeenCalledWith(
-          props.config.getTargetDir(),
-        );
-        expect(clipboardUtils.cleanupOldClipboardImages).toHaveBeenCalledWith(
-          props.config.getTargetDir(),
-        );
-        expect(mockBuffer.replaceRangeByOffset).toHaveBeenCalled();
-      });
-      unmount();
-    });
-
-    it('should not insert anything when clipboard has no image', async () => {
-      vi.mocked(clipboardUtils.clipboardHasImage).mockResolvedValue(false);
-
-      const { stdin, unmount } = renderWithProviders(
-        <InputPrompt {...props} />,
-      );
-
-      await act(async () => {
-        stdin.write('\x16'); // Ctrl+V
-      });
-      await waitFor(() => {
-        expect(clipboardUtils.clipboardHasImage).toHaveBeenCalled();
-      });
-      expect(clipboardUtils.saveClipboardImage).not.toHaveBeenCalled();
-      expect(mockBuffer.setText).not.toHaveBeenCalled();
-      unmount();
-    });
-
-    it('should handle image save failure gracefully', async () => {
-      vi.mocked(clipboardUtils.clipboardHasImage).mockResolvedValue(true);
-      vi.mocked(clipboardUtils.saveClipboardImage).mockResolvedValue(null);
-
-      const { stdin, unmount } = renderWithProviders(
-        <InputPrompt {...props} />,
-      );
-
-      await act(async () => {
-        stdin.write('\x16'); // Ctrl+V
-      });
-      await waitFor(() => {
-        expect(clipboardUtils.saveClipboardImage).toHaveBeenCalled();
-      });
-      expect(mockBuffer.setText).not.toHaveBeenCalled();
+      await act(async () => stdin.write('\x16'));
+      await waitFor(expectations);
       unmount();
     });
 
@@ -559,94 +527,52 @@ describe('InputPrompt', () => {
     });
   });
 
-  it('should complete a partial parent command', async () => {
-    // SCENARIO: /mem -> Tab
-    mockedUseCommandCompletion.mockReturnValue({
-      ...mockCommandCompletion,
-      showSuggestions: true,
+  it.each([
+    {
+      name: 'should complete a partial parent command',
+      bufferText: '/mem',
       suggestions: [{ label: 'memory', value: 'memory', description: '...' }],
-      activeSuggestionIndex: 0,
-    });
-    props.buffer.setText('/mem');
-
-    const { stdin, unmount } = renderWithProviders(<InputPrompt {...props} />);
-
-    await act(async () => {
-      stdin.write('\t'); // Press Tab
-    });
-    await waitFor(() =>
-      expect(mockCommandCompletion.handleAutocomplete).toHaveBeenCalledWith(0),
-    );
-    unmount();
-  });
-
-  it('should append a sub-command when the parent command is already complete', async () => {
-    // SCENARIO: /memory -> Tab (to accept 'add')
-    mockedUseCommandCompletion.mockReturnValue({
-      ...mockCommandCompletion,
-      showSuggestions: true,
+      activeIndex: 0,
+    },
+    {
+      name: 'should append a sub-command when parent command is complete',
+      bufferText: '/memory ',
       suggestions: [
         { label: 'show', value: 'show' },
         { label: 'add', value: 'add' },
       ],
-      activeSuggestionIndex: 1, // 'add' is highlighted
-    });
-    props.buffer.setText('/memory ');
-
-    const { stdin, unmount } = renderWithProviders(<InputPrompt {...props} />);
-
-    await act(async () => {
-      stdin.write('\t'); // Press Tab
-    });
-    await waitFor(() =>
-      expect(mockCommandCompletion.handleAutocomplete).toHaveBeenCalledWith(1),
-    );
-    unmount();
-  });
-
-  it('should handle the "backspace" edge case correctly', async () => {
-    // SCENARIO: /memory -> Backspace -> /memory -> Tab (to accept 'show')
-    mockedUseCommandCompletion.mockReturnValue({
-      ...mockCommandCompletion,
-      showSuggestions: true,
+      activeIndex: 1,
+    },
+    {
+      name: 'should handle the backspace edge case correctly',
+      bufferText: '/memory',
       suggestions: [
         { label: 'show', value: 'show' },
         { label: 'add', value: 'add' },
       ],
-      activeSuggestionIndex: 0, // 'show' is highlighted
-    });
-    // The user has backspaced, so the query is now just '/memory'
-    props.buffer.setText('/memory');
-
-    const { stdin, unmount } = renderWithProviders(<InputPrompt {...props} />);
-
-    await act(async () => {
-      stdin.write('\t'); // Press Tab
-    });
-    await waitFor(() =>
-      // It should NOT become '/show'. It should correctly become '/memory show'.
-      expect(mockCommandCompletion.handleAutocomplete).toHaveBeenCalledWith(0),
-    );
-    unmount();
-  });
-
-  it('should complete a partial argument for a command', async () => {
-    // SCENARIO: /chat resume fi- -> Tab
-    mockedUseCommandCompletion.mockReturnValue({
-      ...mockCommandCompletion,
-      showSuggestions: true,
+      activeIndex: 0,
+    },
+    {
+      name: 'should complete a partial argument for a command',
+      bufferText: '/chat resume fi-',
       suggestions: [{ label: 'fix-foo', value: 'fix-foo' }],
-      activeSuggestionIndex: 0,
+      activeIndex: 0,
+    },
+  ])('$name', async ({ bufferText, suggestions, activeIndex }) => {
+    mockedUseCommandCompletion.mockReturnValue({
+      ...mockCommandCompletion,
+      showSuggestions: true,
+      suggestions,
+      activeSuggestionIndex: activeIndex,
     });
-    props.buffer.setText('/chat resume fi-');
-
+    props.buffer.setText(bufferText);
     const { stdin, unmount } = renderWithProviders(<InputPrompt {...props} />);
 
-    await act(async () => {
-      stdin.write('\t'); // Press Tab
-    });
+    await act(async () => stdin.write('\t'));
     await waitFor(() =>
-      expect(mockCommandCompletion.handleAutocomplete).toHaveBeenCalledWith(0),
+      expect(mockCommandCompletion.handleAutocomplete).toHaveBeenCalledWith(
+        activeIndex,
+      ),
     );
     unmount();
   });
@@ -937,51 +863,36 @@ describe('InputPrompt', () => {
   });
 
   describe('vim mode', () => {
-    it('should not call buffer.handleInput when vim mode is enabled and vim handles the input', async () => {
-      props.vimHandleInput = vi.fn().mockReturnValue(true); // Mock that vim handled it.
+    it.each([
+      {
+        name: 'should not call buffer.handleInput when vim handles input',
+        vimHandled: true,
+        expectBufferHandleInput: false,
+      },
+      {
+        name: 'should call buffer.handleInput when vim does not handle input',
+        vimHandled: false,
+        expectBufferHandleInput: true,
+      },
+      {
+        name: 'should call handleInput when vim mode is disabled',
+        vimHandled: false,
+        expectBufferHandleInput: true,
+      },
+    ])('$name', async ({ vimHandled, expectBufferHandleInput }) => {
+      props.vimHandleInput = vi.fn().mockReturnValue(vimHandled);
       const { stdin, unmount } = renderWithProviders(
         <InputPrompt {...props} />,
       );
 
-      await act(async () => {
-        stdin.write('i');
-      });
+      await act(async () => stdin.write('i'));
       await waitFor(() => {
         expect(props.vimHandleInput).toHaveBeenCalled();
-      });
-      expect(mockBuffer.handleInput).not.toHaveBeenCalled();
-      unmount();
-    });
-
-    it('should call buffer.handleInput when vim mode is enabled but vim does not handle the input', async () => {
-      props.vimHandleInput = vi.fn().mockReturnValue(false); // Mock that vim did NOT handle it.
-      const { stdin, unmount } = renderWithProviders(
-        <InputPrompt {...props} />,
-      );
-
-      await act(async () => {
-        stdin.write('i');
-      });
-      await waitFor(() => {
-        expect(props.vimHandleInput).toHaveBeenCalled();
-        expect(mockBuffer.handleInput).toHaveBeenCalled();
-      });
-      unmount();
-    });
-
-    it('should call handleInput when vim mode is disabled', async () => {
-      // Mock vimHandleInput to return false (vim didn't handle the input)
-      props.vimHandleInput = vi.fn().mockReturnValue(false);
-      const { stdin, unmount } = renderWithProviders(
-        <InputPrompt {...props} />,
-      );
-
-      await act(async () => {
-        stdin.write('i');
-      });
-      await waitFor(() => {
-        expect(props.vimHandleInput).toHaveBeenCalled();
-        expect(mockBuffer.handleInput).toHaveBeenCalled();
+        if (expectBufferHandleInput) {
+          expect(mockBuffer.handleInput).toHaveBeenCalled();
+        } else {
+          expect(mockBuffer.handleInput).not.toHaveBeenCalled();
+        }
       });
       unmount();
     });
@@ -2226,8 +2137,6 @@ describe('InputPrompt', () => {
       );
       await waitFor(() => {
         expect(stdout.lastFrame()).not.toContain(`{chalk.inverse(' ')}`);
-        // This snapshot is good to make sure there was an input prompt but does
-        // not show the inverted cursor because snapshots do not show colors.
         expect(stdout.lastFrame()).toMatchSnapshot();
       });
       unmount();
