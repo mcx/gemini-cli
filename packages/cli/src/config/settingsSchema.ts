@@ -1243,7 +1243,7 @@ const SETTINGS_SCHEMA = {
             label: 'Codebase Investigator Max Num Turns',
             category: 'Experimental',
             requiresRestart: true,
-            default: 15,
+            default: 10,
             description:
               'Maximum number of turns for the Codebase Investigator agent.',
             showInDialog: true,
@@ -1253,7 +1253,7 @@ const SETTINGS_SCHEMA = {
             label: 'Max Time (Minutes)',
             category: 'Experimental',
             requiresRestart: true,
-            default: 5,
+            default: 3,
             description:
               'Maximum time for the Codebase Investigator agent (in minutes).',
             showInDialog: false,
